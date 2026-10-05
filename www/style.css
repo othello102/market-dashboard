@@ -93,3 +93,5 @@ body.editing .card.add{display:flex}
 .hist th:first-child,.hist td:first-child{text-align:left;color:var(--sub)}
 .more{display:block;margin:10px auto 0}
 .more[hidden]{display:none}
+.edit-btns{display:flex;gap:6px;flex:none}
+textarea{display:block;width:100%;padding:10px;font:inherit;font-size:12px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:10px;resize:vertical}

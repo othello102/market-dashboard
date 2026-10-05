@@ -20,7 +20,7 @@
 <main>
   <div id="edit-bar" class="edit-bar" hidden>
     <span>카드의 ✕로 삭제, ＋ 카드로 항목 추가</span>
-    <button id="reset-btn">기본값으로</button>
+    <span class="edit-btns"><button id="backup-btn">백업/복원</button><button id="reset-btn">기본값으로</button></span>
   </div>
 
   <section>
@@ -90,6 +90,19 @@
       <button type="submit" class="primary" id="w-save">추가</button>
     </div>
   </form>
+</dialog>
+
+<!-- 백업/복원 -->
+<dialog id="dlg-backup">
+  <h3>백업 / 복원</h3>
+  <p class="hint">지수 목록과 보유 종목(수량·평단)이 들어 있는 텍스트입니다. 복사해서 보관해 두고, 필요할 때 붙여넣고 복원하세요.</p>
+  <textarea id="b-text" rows="7" spellcheck="false"></textarea>
+  <p id="b-msg" class="hint"></p>
+  <div class="actions">
+    <button id="b-close">닫기</button>
+    <button id="b-copy">복사</button>
+    <button id="b-restore" class="primary">복원</button>
+  </div>
 </dialog>
 
 <!-- 상세 -->

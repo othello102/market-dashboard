@@ -35,10 +35,30 @@ const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && win
 const useProxy = !isNative && location.port === "5173"; // 개발 서버에서만 프록시 사용
 
 /* ================= 저장소 ================= */
+// 이중 저장: WebView localStorage + 안드로이드 네이티브 저장소(앱 주소가 바뀌어도 유지)
+const NativePrefs = isNative && window.Capacitor.registerPlugin ? window.Capacitor.registerPlugin("Preferences") : null;
+const SAVED_KEYS = ["watch.v1", "holdings.v1"];
 const store = {
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set(k, v) {
+    const s = JSON.stringify(v);
+    try { localStorage.setItem(k, s); } catch {}
+    if (NativePrefs) NativePrefs.set({ key: k, value: s }).catch(() => {});
+  },
 };
+async function initStore() {
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  if (!NativePrefs) return;
+  for (const k of SAVED_KEYS) {
+    try {
+      const { value } = await NativePrefs.get({ key: k });
+      if (value != null) { try { localStorage.setItem(k, value); } catch {} }      // 네이티브 값을 기준으로 복구
+      else { const l = localStorage.getItem(k); if (l != null) await NativePrefs.set({ key: k, value: l }); } // 기존 데이터를 네이티브로 이전
+    } catch { /* 플러그인이 없는 구버전 APK면 localStorage만 사용 */ }
+  }
+  watch = store.get("watch.v1", null) || clone(DEFAULT_WATCH);
+  holdings = store.get("holdings.v1", []);
+}
 const clone = o => JSON.parse(JSON.stringify(o));
 let watch = store.get("watch.v1", null) || clone(DEFAULT_WATCH);
 let holdings = store.get("holdings.v1", []);
@@ -460,5 +480,33 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkUpdate(); refresh(); } });
 setInterval(() => { if (!document.hidden) { checkUpdate(); refresh(); } }, 60000);
-checkUpdate();
-refresh();
+/* ================= 백업 / 복원 ================= */
+const dlgB = $("dlg-backup");
+$("backup-btn").onclick = () => {
+  $("b-text").value = JSON.stringify({ watch, holdings });
+  $("b-msg").textContent = "";
+  dlgB.showModal();
+};
+$("b-close").onclick = () => dlgB.close();
+$("b-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("b-text").value); $("b-msg").textContent = "복사했습니다. 메모장이나 메신저에 보관하세요."; }
+  catch { $("b-text").select(); $("b-msg").textContent = "전체 선택됐습니다. 직접 복사하세요."; }
+};
+$("b-restore").onclick = () => {
+  try {
+    const d = JSON.parse($("b-text").value);
+    const okSec = d.watch && Object.keys(DEFAULT_WATCH).every(k => Array.isArray(d.watch[k]) && d.watch[k].every(it => it && it.sym && it.name));
+    const okHold = Array.isArray(d.holdings) && d.holdings.every(h => h && h.sym && h.qty > 0 && h.avg > 0);
+    if (!okSec || !okHold) throw new Error("형식 오류");
+    if (!confirm("현재 데이터를 이 백업으로 덮어쓸까요?")) return;
+    watch = d.watch; holdings = d.holdings;
+    store.set("watch.v1", watch); store.set("holdings.v1", holdings);
+    dlgB.close(); refresh();
+  } catch { $("b-msg").textContent = "백업 내용이 올바르지 않습니다."; }
+};
+
+(async () => {
+  await initStore();
+  checkUpdate();
+  refresh();
+})();
