@@ -2,6 +2,7 @@
   "appId": "com.hy.marketdashboard",
   "appName": "마켓 대시보드",
   "webDir": "www",
+  "server": { "url": "https://othello102.github.io/market-dashboard/", "cleartext": false },
   "plugins": { "CapacitorHttp": { "enabled": true } },
   "android": { "backgroundColor": "#0f1419" }
 }
