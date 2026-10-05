@@ -36,7 +36,7 @@ const useProxy = !isNative && location.port === "5173"; // 개발 서버에서�
 
 /* ================= 저장소 ================= */
 // 이중 저장: WebView localStorage + 안드로이드 네이티브 저장소(앱 주소가 바뀌어도 유지)
-const NativePrefs = isNative && window.Capacitor.registerPlugin ? window.Capacitor.registerPlugin("Preferences") : null;
+const NativePrefs = isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.Preferences || null;
 const SAVED_KEYS = ["watch.v1", "holdings.v1"];
 const store = {
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch { return d; } },
