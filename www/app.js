@@ -72,8 +72,8 @@ function yurl(path) {
   return isNative || !useProxy ? "https://query1.finance.yahoo.com" + path : "/api/yahoo" + path;
 }
 
-async function fetchChart(sym, range, interval) {
-  const res = await fetch(yurl(`/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}`));
+async function fetchChart(sym, range, interval, prePost) {
+  const res = await fetch(yurl(`/v8/finance/chart/${encodeURIComponent(sym)}?interval=${interval}&range=${range}${prePost ? "&includePrePost=true" : ""}`));
   if (!res.ok) throw new Error("HTTP " + res.status);
   const json = await res.json();
   const r = json.chart && json.chart.result && json.chart.result[0];
@@ -88,6 +88,37 @@ async function fetchQuote(sym) {
   const prev = closes.length >= 2 ? closes[closes.length - 2] : r.meta.chartPreviousClose;
   if (price == null) throw new Error("no price");
   return { price, prev, closes, name: r.meta.shortName || r.meta.longName || sym };
+}
+
+// 보유 종목용 실시간 시세: 1분봉(프리/애프터마켓 포함)의 마지막 값을 현재가로 사용
+async function fetchLive(sym) {
+  const r = await fetchChart(sym, "1d", "1m", true);
+  const ts = r.timestamp || [], cl = r.indicators.quote[0].close || [];
+  let i = cl.length - 1;
+  while (i >= 0 && cl[i] == null) i--;
+  if (i < 0) throw new Error("no data");
+  const m = r.meta, t = ts[i], p = m.currentTradingPeriod || {};
+  const inP = x => x && t >= x.start && t < x.end;
+  const state = inP(p.regular) ? "장중" : inP(p.pre) ? "프리마켓" : inP(p.post) ? "애프터마켓" : "장마감";
+  return { price: cl[i], prev: m.chartPreviousClose, state, ts: t * 1000, name: m.shortName || m.longName || sym };
+}
+
+let liveBusy = false;
+async function refreshLive() {
+  if (liveBusy || !holdings.length) return;
+  liveBusy = true;
+  try {
+    await Promise.all([...new Set([...holdings.map(h => h.sym), "KRW=X"])].map(async s => {
+      try { quotes[s] = { ...(quotes[s] && !quotes[s].error ? quotes[s] : {}), ...(await fetchLive(s)) }; }
+      catch { if (!quotes[s]) quotes[s] = { error: true }; }
+    }));
+    renderHoldings();
+    markUpdated();
+  } finally { liveBusy = false; }
+}
+
+function markUpdated() {
+  $("updated").textContent = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 async function loadQuotes(symbols) {
@@ -178,12 +209,13 @@ function renderHoldings() {
     const day = h.qty * (q.price - q.prev);
     cost += c; value += v; dayPL += day; ok++;
     return `<div class="h-item" data-hi="${i}">
-      <div class="h-top"><span class="h-sym">${esc(h.sym)}</span>
-        <span class="h-pl ${cls(pl)}">${sign(pl)}$${fmt(Math.abs(pl))} (${sign(pct)}${fmt(Math.abs(pct))}%)</span></div>
+      <div class="h-top"><div><span class="h-sym">${esc(h.sym)}</span>${q.state ? `<span class="badge ${q.state === "장중" ? "live" : ""}">${q.state === "장중" ? "● " : ""}${q.state}</span>` : ""}
+          <div class="h-name">${esc(q.name || "")}</div></div>
+        <div class="h-pl ${cls(pl)}"><span class="h-pct">${sign(pct)}${fmt(Math.abs(pct))}%</span><span class="h-amt">${sign(pl)}$${fmt(Math.abs(pl))}</span></div></div>
       <div class="h-rows">
         <span>현재가 <b>$${fmt(q.price)}</b></span><span>평단 <b>$${fmt(h.avg)}</b></span>
         <span>수량 <b>${fmt(h.qty, h.qty % 1 ? 4 : 0)}주</b></span><span>평가금액 <b>$${fmt(v)}</b></span>
-        <span>오늘 <b class="${cls(day)}">${sign(day)}$${fmt(Math.abs(day))}</b></span>
+        <span>오늘 <b class="${cls(day)}">${sign(day)}$${fmt(Math.abs(day))} (${sign(day)}${fmt(Math.abs(q.prev ? (q.price - q.prev) / q.prev * 100 : 0))}%)</b></span>
         ${fx ? `<span>평가손익(원) <b class="${cls(pl)}">${krw(pl * fx)}</b></span>` : ""}
       </div>
       <div class="h-act"><button data-edit="${i}">수정</button><button data-del="${i}">삭제</button></div></div>`;
@@ -448,10 +480,12 @@ window.addEventListener("resize", () => { if (detail.open && D.series) drawChart
 /* ================= 새로고침 ================= */
 async function refresh() {
   $("refresh").classList.add("spin");
-  const syms = [...Object.values(watch).flat().map(i => i.sym), "KRW=X", ...holdings.map(h => h.sym)];
+  const syms = [...Object.values(watch).flat().map(i => i.sym), "KRW=X"]; // 보유 종목은 refreshLive가 담당
   await loadQuotes(syms);
-  renderCards(); renderHoldings();
-  $("updated").textContent = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  renderCards();
+  await refreshLive();
+  renderHoldings();
+  markUpdated();
   $("refresh").classList.remove("spin");
 }
 $("refresh").onclick = () => { checkUpdate(); refresh(); };
@@ -480,6 +514,7 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkUpdate(); refresh(); } });
 setInterval(() => { if (!document.hidden) { checkUpdate(); refresh(); } }, 60000);
+setInterval(() => { if (!document.hidden) refreshLive(); }, 10000); // 보유 종목 10초 갱신
 /* ================= 백업 / 복원 ================= */
 const dlgB = $("dlg-backup");
 $("backup-btn").onclick = () => {
