@@ -96,7 +96,15 @@ async function fetchLive(sym) {
   const ts = r.timestamp || [], cl = r.indicators.quote[0].close || [];
   let i = cl.length - 1;
   while (i >= 0 && cl[i] == null) i--;
-  if (i < 0) throw new Error("no data");
+  if (i < 0) {
+    // 지수 등은 장 시작 전에 1분봉이 비어 있음 -> 최근 일봉 종가 사용
+    const d = await fetchChart(sym, "5d", "1d");
+    const dt = d.timestamp || [], dc = d.indicators.quote[0].close || [];
+    const k = []; dc.forEach((v, j) => { if (v != null) k.push(j); });
+    if (k.length < 2) throw new Error("no data");
+    const last = k[k.length - 1], before = k[k.length - 2];
+    return { price: dc[last], prev: dc[before], state: "장마감", ts: dt[last] * 1000, name: d.meta.shortName || d.meta.longName || sym };
+  }
   const m = r.meta, t = ts[i], p = m.currentTradingPeriod || {};
   const inP = x => x && t >= x.start && t < x.end;
   const state = inP(p.regular) ? "장중" : inP(p.pre) ? "프리마켓" : inP(p.post) ? "애프터마켓" : "장마감";
@@ -617,10 +625,135 @@ function setTab(t) {
   tab = t; store.set("tab.v1", t);
   document.querySelectorAll("#tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   $("view-market").hidden = t !== "market";
+  $("view-brief").hidden = t !== "brief";
   $("view-m7").hidden = t !== "m7";
   $("edit-btn").style.display = t === "market" ? "" : "none";
   if (t === "m7") { renderM7(); refreshM7(); }
+  if (t === "brief") { renderBrief(); refreshBrief(); }
 }
+
+/* ================= 시황 요약 (시세 데이터로 자동 작성) ================= */
+const BRIEF_SYMS = ["^IXIC", "^GSPC", "^DJI", "^SOX", "^VIX", "KRW=X", "DX-Y.NYB", "CL=F", "GC=F", "BTC-USD", "^TNX", "^IRX", ...M7.map(m => m.sym)];
+const brief = {};
+let briefBusy = false, briefText = "";
+
+async function refreshBrief() {
+  if (briefBusy) return;
+  briefBusy = true;
+  try {
+    await Promise.all(BRIEF_SYMS.map(async s => { try { brief[s] = await fetchLive(s); } catch {} }));
+    renderBrief(); markUpdated();
+  } finally { briefBusy = false; }
+}
+
+const bq = s => brief[s];
+const bp = s => { const q = brief[s]; return q && q.prev ? (q.price - q.prev) / q.prev * 100 : null; };
+const P = p => `<b class="${cls(p)}">${sign(p)}${fmt(Math.abs(p))}%</b>`;
+const tone = a => a >= 1.5 ? "강세" : a >= 0.5 ? "상승" : a > 0.15 ? "소폭 상승" : a > -0.15 ? "보합" : a > -0.5 ? "소폭 하락" : a > -1.5 ? "하락" : "약세";
+
+function buildBrief() {
+  const idx = [["^IXIC", "나스닥"], ["^GSPC", "S&P 500"], ["^DJI", "다우"]].filter(([s]) => bp(s) != null);
+  if (!idx.length) return null;
+  const secs = [];
+  const avg = idx.reduce((a, [s]) => a + bp(s), 0) / idx.length;
+  const st = (bq("AAPL") || bq("NVDA") || {}).state || "장마감";
+  const phase = { "장중": "장중", "프리마켓": "프리마켓 (지수는 직전 정규장 마감 기준)", "애프터마켓": "애프터마켓 (지수는 정규장 마감 기준)" }[st] || "마감";
+  const title = `미국 증시 ${tone(avg)} · ${phase}`;
+
+  // 미국 증시
+  const L = [];
+  L.push(idx.map(([s, n]) => `${n} ${fmt(bq(s).price)} (${P(bp(s))})`).join(", ") + ".");
+  const ps = idx.map(([s]) => bp(s));
+  if (ps.every(p => p > 0)) L.push("세 지수가 모두 올랐습니다.");
+  else if (ps.every(p => p < 0)) L.push("세 지수가 모두 내렸습니다.");
+  else L.push("지수별로 흐름이 엇갈렸습니다.");
+  const nq = bp("^IXIC"), dj = bp("^DJI");
+  if (nq != null && dj != null && Math.abs(nq - dj) >= 0.5) L.push(nq > dj ? "나스닥이 다우를 앞서 기술·성장주 중심의 움직임입니다." : "다우가 나스닥보다 강해 기술주보다 가치·경기민감주가 상대적으로 나았습니다.");
+  const sx = bp("^SOX");
+  if (sx != null) L.push(`필라델피아 반도체지수 ${P(sx)}${Math.abs(sx) >= 1 ? (sx > 0 ? " — 반도체 강세." : " — 반도체 약세.") : "."}`);
+  const vx = bq("^VIX");
+  if (vx) {
+    const lv = vx.price < 15 ? "안정" : vx.price < 20 ? "보통" : vx.price < 30 ? "경계" : "공포";
+    L.push(`VIX ${fmt(vx.price)} (${P(bp("^VIX"))}) — ${lv} 구간.`);
+  }
+  secs.push(["미국 증시", L]);
+
+  // 빅테크
+  const m7 = M7.map(m => ({ ...m, q: bq(m.sym), p: bp(m.sym) })).filter(m => m.p != null);
+  if (m7.length) {
+    const cap = m7.reduce((a, m) => a + m.q.price * m.sh, 0);
+    const w = m7.reduce((a, m) => a + m.p * m.q.price * m.sh, 0) / cap;
+    const srt = [...m7].sort((a, b) => b.p - a.p);
+    const up = m7.filter(m => m.p > 0).length;
+    secs.push(["빅테크(M7)", [
+      `시총 가중 평균 ${P(w)} (상승 ${up}종목 · 하락 ${m7.length - up}종목).`,
+      `${srt[0].sym} ${P(srt[0].p)}로 가장 강했고, ${srt[srt.length - 1].sym} ${P(srt[srt.length - 1].p)}로 가장 약했습니다.`,
+    ]]);
+  }
+
+  // 환율·원자재
+  const F = [];
+  const fx = bq("KRW=X"), fp = bp("KRW=X");
+  if (fx) F.push(`원/달러 ${fmt(fx.price)}원 (${P(fp)}) — ${fp < -0.2 ? "원화 강세(환율 하락)" : fp > 0.2 ? "원화 약세(환율 상승)" : "큰 변동 없음"}.`);
+  const dx = bq("DX-Y.NYB"), dp = bp("DX-Y.NYB");
+  if (dx) F.push(`달러인덱스 ${fmt(dx.price)} (${P(dp)}) — ${dp > 0.2 ? "달러 강세" : dp < -0.2 ? "달러 약세" : "보합권"}.`);
+  const wti = bq("CL=F"), gold = bq("GC=F"), btc = bq("BTC-USD");
+  if (wti) F.push(`WTI 유가 $${fmt(wti.price)} (${P(bp("CL=F"))}).`);
+  if (gold) F.push(`금 $${fmt(gold.price, 1)} (${P(bp("GC=F"))}).`);
+  if (btc) F.push(`비트코인 $${fmt(btc.price, 0)} (${P(bp("BTC-USD"))}).`);
+  if (F.length) secs.push(["환율 · 원자재", F]);
+
+  // 금리
+  const t10 = bq("^TNX"), t3 = bq("^IRX");
+  if (t10) {
+    const R = [];
+    const bpChg = (t10.price - t10.prev) * 100;
+    R.push(`미국채 10년 ${fmt(t10.price, 3)}% (${sign(bpChg)}${fmt(Math.abs(bpChg), 1)}bp) — ${bpChg > 2 ? "금리 상승" : bpChg < -2 ? "금리 하락" : "보합권"}.`);
+    if (t3) {
+      const sp = t10.price - t3.price;
+      R.push(`10년−3개월 스프레드 ${sign(sp)}${fmt(Math.abs(sp), 2)}%p — ${sp < 0 ? "장단기 금리 역전 상태." : "정상(우상향) 곡선."}`);
+    }
+    secs.push(["금리", R]);
+  }
+
+  // 주목할 움직임
+  const watchList = [...M7.map(m => [m.sym, m.sym]), ["^SOX", "반도체지수"], ["CL=F", "WTI"], ["GC=F", "금"], ["BTC-USD", "비트코인"], ["KRW=X", "원/달러"]];
+  const hot = watchList.map(([s, n]) => [n, bp(s)]).filter(([, p]) => p != null && Math.abs(p) >= 2).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6);
+  if (hot.length) secs.push(["주목할 움직임 (±2% 이상)", hot.map(([n, p]) => `${n} ${P(p)} ${p > 0 ? "급등" : "급락"}`)]);
+
+  // 내 보유 종목
+  const hs = holdings.map(h => ({ h, q: quotes[h.sym] })).filter(x => x.q && !x.q.error && x.q.prev);
+  if (hs.length) {
+    const day = hs.reduce((a, x) => a + x.h.qty * (x.q.price - x.q.prev), 0);
+    const val = hs.reduce((a, x) => a + x.h.qty * x.q.price, 0);
+    const cost = hs.reduce((a, x) => a + x.h.qty * x.h.avg, 0);
+    const dpct = val - day ? day / (val - day) * 100 : 0, tpct = cost ? (val - cost) / cost * 100 : 0;
+    const by = [...hs].sort((a, b) => (b.q.price - b.q.prev) / b.q.prev - (a.q.price - a.q.prev) / a.q.prev);
+    const pc = x => (x.q.price - x.q.prev) / x.q.prev * 100;
+    const H = [`오늘 손익 <b class="${cls(day)}">${sign(day)}$${fmt(Math.abs(day))}</b> (${P(dpct)}), 누적 수익률 ${P(tpct)}.`];
+    if (by.length > 1) H.push(`${by[0].h.sym} ${P(pc(by[0]))}로 가장 좋았고, ${by[by.length - 1].h.sym} ${P(pc(by[by.length - 1]))}로 가장 부진했습니다.`);
+    secs.push(["내 보유 종목", H]);
+  }
+  return { title, secs, asof: (bq("^GSPC") || {}).ts };
+}
+
+function renderBrief() {
+  const b = buildBrief();
+  if (!b) { $("br-title").textContent = "데이터를 불러오는 중..."; $("br-body").innerHTML = ""; return; }
+  const d = b.asof ? new Date(b.asof) : new Date();
+  const dow = "일월화수목금토"[d.getDay()];
+  $("br-date").textContent = `${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())}(${dow}) 지수 기준 · ${new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 작성`;
+  $("br-title").textContent = b.title;
+  $("br-body").innerHTML = b.secs.map(([h, ls]) => `<div class="b-card"><h3>${h}</h3><ul>${ls.map(l => `<li>${l}</li>`).join("")}</ul></div>`).join("");
+  briefText = `${b.title}\n${$("br-date").textContent}\n\n` + b.secs.map(([h, ls]) => `[${h}]\n` + ls.map(l => "- " + l.replace(/<[^>]+>/g, "")).join("\n")).join("\n\n");
+}
+
+$("br-copy").onclick = async () => {
+  try { await navigator.clipboard.writeText(briefText); toast("복사했습니다."); }
+  catch { toast("복사하지 못했습니다."); }
+  setTimeout(() => { $("toast").hidden = true; }, 1800);
+};
+setInterval(() => { if (!document.hidden && tab === "brief") refreshBrief(); }, 60000);
 $("tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
 function openM7(sym) {
   const m = M7.find(x => x.sym === sym);
@@ -662,7 +795,7 @@ $("b-restore").onclick = () => {
 
 (async () => {
   await initStore();
-  setTab(store.get("tab.v1", "market") === "m7" ? "m7" : "market");
+  setTab(["market", "brief", "m7"].includes(store.get("tab.v1", "market")) ? store.get("tab.v1", "market") : "market");
   checkUpdate();
   refresh();
 })();

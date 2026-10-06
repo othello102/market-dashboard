@@ -18,7 +18,8 @@
 </header>
 
 <nav class="tabbar" id="tabbar">
-  <button data-tab="market" class="on">시황</button>
+  <button data-tab="market" class="on">대시보드</button>
+  <button data-tab="brief">시황</button>
   <button data-tab="m7">M7</button>
 </nav>
 
@@ -53,6 +54,14 @@
     <div id="holdings"></div>
   </section>
 
+</div>
+
+<div id="view-brief" hidden>
+  <div class="m7-lbl" id="br-date">-</div>
+  <h2 class="b-title" id="br-title">시황을 정리하는 중...</h2>
+  <div id="br-body"></div>
+  <button id="br-copy" class="more">텍스트로 복사</button>
+  <p class="hint">시세 데이터를 바탕으로 자동 생성한 요약입니다. 가격 움직임만 정리하며, 오른 이유(뉴스·지표)는 설명하지 않습니다.</p>
 </div>
 
 <div id="view-m7" hidden>
