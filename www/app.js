@@ -515,6 +515,126 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { checkUpdate(); refresh(); } });
 setInterval(() => { if (!document.hidden) { checkUpdate(); refresh(); } }, 60000);
 setInterval(() => { if (!document.hidden) refreshLive(); }, 10000); // 보유 종목 10초 갱신
+/* ================= M7 히트맵 ================= */
+// sh: 발행주식수(십억 주, 근사값). 크기 = 현재가 × 주식수 이므로 가격에 따라 타일 비율이 달라집니다.
+const M7 = [
+  { sym: "AAPL", name: "Apple", sh: 14.7 },
+  { sym: "MSFT", name: "Microsoft", sh: 7.43 },
+  { sym: "NVDA", name: "NVIDIA", sh: 24.3 },
+  { sym: "GOOGL", name: "Alphabet", sh: 12.1 },
+  { sym: "AMZN", name: "Amazon", sh: 10.7 },
+  { sym: "META", name: "Meta", sh: 2.52 },
+  { sym: "TSLA", name: "Tesla", sh: 3.2 },
+];
+let tab = "market";
+let m7Busy = false;
+
+function squarify(items, W, H) {
+  const total = items.reduce((a, b) => a + b.v, 0);
+  const scale = W * H / total;
+  const nodes = items.map(i => ({ ...i, a: i.v * scale }));
+  const out = []; let x = 0, y = 0, w = W, h = H, row = [];
+  const worst = (r, side) => {
+    const s = r.reduce((a, b) => a + b.a, 0);
+    const mx = Math.max(...r.map(q => q.a)), mn = Math.min(...r.map(q => q.a));
+    return Math.max(side * side * mx / (s * s), s * s / (side * side * mn));
+  };
+  const place = r => {
+    const s = r.reduce((a, b) => a + b.a, 0);
+    if (w >= h) {
+      const cw = s / h; let cy = y;
+      r.forEach(q => { const rh = q.a / cw; out.push({ ...q, x, y: cy, w: cw, h: rh }); cy += rh; });
+      x += cw; w -= cw;
+    } else {
+      const rh = s / w; let cx = x;
+      r.forEach(q => { const rw = q.a / rh; out.push({ ...q, x: cx, y, w: rw, h: rh }); cx += rw; });
+      y += rh; h -= rh;
+    }
+  };
+  for (const n of nodes) {
+    const side = Math.min(w, h);
+    if (!row.length || worst([...row, n], side) <= worst(row, side)) row.push(n);
+    else { place(row); row = [n]; }
+  }
+  if (row.length) place(row);
+  return out;
+}
+
+// 등락률 -> 색 (±3%에서 가장 진함, 상승=빨강/하락=파랑: 앱 전체와 동일한 한국식)
+function heat(pct) {
+  const t = Math.min(Math.abs(pct) / 3, 1);
+  const base = [58, 64, 74], to = pct >= 0 ? [214, 48, 49] : [30, 111, 217];
+  return `rgb(${base.map((b, i) => Math.round(b + (to[i] - b) * t)).join(",")})`;
+}
+
+function renderM7() {
+  const rows = M7.map(m => {
+    const q = quotes[m.sym];
+    if (!q || q.error || q.price == null) return null;
+    const pct = q.prev ? (q.price - q.prev) / q.prev * 100 : 0;
+    return { ...m, price: q.price, pct, cap: q.price * m.sh, state: q.state };
+  }).filter(Boolean);
+  const map = $("m7-map");
+  if (!rows.length) { map.innerHTML = `<div class="chart-msg">불러오는 중...</div>`; map.style.height = "200px"; return; }
+
+  const W = map.clientWidth || 360, H = Math.round(Math.min(W * 1.05, 460));
+  map.style.height = H + "px";
+  const tiles = squarify(rows.map(r => ({ ...r, v: r.cap })).sort((a, b) => b.v - a.v), W, H);
+  map.innerHTML = tiles.map(t => {
+    const m = Math.min(t.w, t.h);
+    const fs = Math.max(10, Math.min(34, m / 3.6, (t.w - 8) / (t.sym.length * 0.72)));
+    return `<div class="tile" data-sym="${t.sym}" style="left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;background:${heat(t.pct)}">` +
+      `<b style="font-size:${fs}px">${t.sym}</b>` +
+      `<span style="font-size:${Math.max(10, fs * 0.6)}px">${sign(t.pct)}${fmt(Math.abs(t.pct))}%</span>` +
+      (t.w > 90 && t.h > 78 ? `<small style="font-size:${Math.max(9, fs * 0.45)}px">$${fmt(t.price)}</small>` : "") + `</div>`;
+  }).join("");
+
+  const totCap = rows.reduce((a, r) => a + r.cap, 0);
+  const avg = rows.reduce((a, r) => a + r.pct * r.cap, 0) / totCap;
+  $("m7-avg").className = "m7-avg " + cls(avg);
+  $("m7-avg").textContent = `${sign(avg)}${fmt(Math.abs(avg))}%`;
+  const st = rows.find(r => r.state);
+  $("m7-state").textContent = st ? `${st.state === "장중" ? "● " : ""}${st.state}` : "";
+
+  $("m7-list").innerHTML = [...rows].sort((a, b) => b.cap - a.cap).map(r =>
+    `<div class="m7-row" data-sym="${r.sym}"><div><div class="t">${r.sym}</div><div class="n">${r.name} · 시총 약 $${fmt(r.cap / 1000, 2)}T</div></div>` +
+    `<div class="p">$${fmt(r.price)}</div><div class="c ${cls(r.pct)}">${sign(r.pct)}${fmt(Math.abs(r.pct))}%</div></div>`).join("");
+}
+
+async function refreshM7() {
+  if (m7Busy) return;
+  m7Busy = true;
+  try {
+    await Promise.all(M7.map(async m => {
+      try { quotes[m.sym] = { ...(quotes[m.sym] && !quotes[m.sym].error ? quotes[m.sym] : {}), ...(await fetchLive(m.sym)) }; }
+      catch { if (!quotes[m.sym]) quotes[m.sym] = { error: true }; }
+    }));
+    renderM7(); markUpdated();
+  } finally { m7Busy = false; }
+}
+
+function setTab(t) {
+  tab = t; store.set("tab.v1", t);
+  document.querySelectorAll("#tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  $("view-market").hidden = t !== "market";
+  $("view-m7").hidden = t !== "m7";
+  $("edit-btn").style.display = t === "market" ? "" : "none";
+  if (t === "m7") { renderM7(); refreshM7(); }
+}
+$("tabbar").addEventListener("click", e => { const b = e.target.closest("[data-tab]"); if (b) setTab(b.dataset.tab); });
+function openM7(sym) {
+  const m = M7.find(x => x.sym === sym);
+  if (m) openDetail({ sym: m.sym, name: m.name, dec: 2, unit: "$" });
+}
+$("m7-map").addEventListener("click", e => { const t = e.target.closest("[data-sym]"); if (t) openM7(t.dataset.sym); });
+$("m7-list").addEventListener("click", e => { const t = e.target.closest("[data-sym]"); if (t) openM7(t.dataset.sym); });
+setInterval(() => { if (!document.hidden && tab === "m7") refreshM7(); }, 10000);
+
+// 헤더 높이에 맞춰 탭바 위치 지정
+const syncHeader = () => document.documentElement.style.setProperty("--hh", document.querySelector("header").offsetHeight + "px");
+window.addEventListener("resize", () => { syncHeader(); if (tab === "m7") renderM7(); });
+syncHeader();
+
 /* ================= 백업 / 복원 ================= */
 const dlgB = $("dlg-backup");
 $("backup-btn").onclick = () => {
@@ -542,6 +662,7 @@ $("b-restore").onclick = () => {
 
 (async () => {
   await initStore();
+  setTab(store.get("tab.v1", "market") === "m7" ? "m7" : "market");
   checkUpdate();
   refresh();
 })();

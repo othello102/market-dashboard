@@ -17,7 +17,13 @@
   </div>
 </header>
 
+<nav class="tabbar" id="tabbar">
+  <button data-tab="market" class="on">시황</button>
+  <button data-tab="m7">M7</button>
+</nav>
+
 <main>
+<div id="view-market">
   <div id="edit-bar" class="edit-bar" hidden>
     <span>카드의 ✕로 삭제, ＋ 카드로 항목 추가</span>
     <span class="edit-btns"><button id="backup-btn">백업/복원</button><button id="reset-btn">기본값으로</button></span>
@@ -46,6 +52,18 @@
     <div id="summary" class="summary"></div>
     <div id="holdings"></div>
   </section>
+
+</div>
+
+<div id="view-m7" hidden>
+  <div class="m7-head">
+    <div><div class="m7-lbl">M7 평균 등락 (시총 가중)</div><div id="m7-avg" class="m7-avg">-</div></div>
+    <div id="m7-state" class="m7-state"></div>
+  </div>
+  <div id="m7-map" class="treemap"></div>
+  <div id="m7-list" class="m7-list"></div>
+  <p class="hint">타일 크기 = 시가총액(발행주식수 근사값 × 현재가), 색 = 전일 대비 등락률(±3%에서 가장 진함). 타일을 누르면 상세 차트가 열립니다.</p>
+</div>
 
   <p class="note">시세는 Yahoo Finance 기준이며 약간 지연될 수 있습니다. 투자 판단의 책임은 본인에게 있습니다.<br><span id="ver"></span></p>
 </main>
